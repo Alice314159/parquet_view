@@ -260,9 +260,32 @@ class ParquetTab(QWidget):
             return False
 
     def update_tree(self):
+        """使用 DuckDB 直接对当前 parquet 做 DESCRIBE，更新文件结构树"""
         self.tree_widget.clear()
-        if not self.columns:
+
+        # 没有文件就不显示
+        if not getattr(self, "file_path", None):
             return
+
+        # 确保有 duckdb 连接
+        try:
+            import duckdb
+        except ImportError:
+            # 真的没有 duckdb，就简单提示一下
+            root = QTreeWidgetItem(self.tree_widget)
+            root.setText(0, "数据表")
+            columns_node = QTreeWidgetItem(root)
+            columns_node.setText(0, "列 (Columns)")
+            item = QTreeWidgetItem(columns_node)
+            item.setText(0, "无法获取列信息")
+            item.setText(1, "duckdb 未安装")
+            self.tree_widget.expandAll()
+            return
+
+        if not getattr(self, "con", None):
+            # 你如果在别处已经创建 self.con，这里就会跳过
+            self.con = duckdb.connect()
+
         root = QTreeWidgetItem(self.tree_widget)
         root.setText(0, "数据表")
         root.setFont(0, QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
@@ -272,15 +295,20 @@ class ParquetTab(QWidget):
         columns_node.setFont(0, QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
 
         try:
-            schema_tbl = self.con.execute("SELECT * FROM t LIMIT 1").fetch_arrow_table()
-            dtype_map = {f.name: str(f.type) for f in schema_tbl.schema}
-        except Exception:
-            dtype_map = {c: "unknown" for c in self.columns}
+            # ⭐ 关键：直接针对当前 parquet 文件做 DESCRIBE，不再依赖 self.df / self.table_name
+            rows = self.con.execute(
+                "DESCRIBE SELECT * FROM read_parquet(?)",
+                [self.file_path]
+            ).fetchall()  # 每行: (column_name, column_type, null, key, default, extra)
 
-        for col in self.columns:
-            it = QTreeWidgetItem(columns_node)
-            it.setText(0, col)
-            it.setText(1, dtype_map.get(col, ""))
+            for name, col_type, *_ in rows:
+                item = QTreeWidgetItem(columns_node)
+                item.setText(0, name)
+                item.setText(1, col_type)
+        except Exception as e:
+            item = QTreeWidgetItem(columns_node)
+            item.setText(0, "无法获取列信息")
+            item.setText(1, str(e))
 
         self.tree_widget.expandAll()
 
