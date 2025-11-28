@@ -1,0 +1,13 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\Classes\.parquet]
+@="ParquetViewerFile"
+
+[HKEY_CURRENT_USER\Software\Classes\ParquetViewerFile]
+@="Parquet File"
+
+[HKEY_CURRENT_USER\Software\Classes\ParquetViewerFile\DefaultIcon]
+@="\"F:\\VesperSet\\duckDB_client\\dist\\ParquetViewer\\ParquetViewer.exe\",0"
+
+[HKEY_CURRENT_USER\Software\Classes\ParquetViewerFile\shell\open\command]
+@="\"F:\\VesperSet\\duckDB_client\\dist\\ParquetViewer\\ParquetViewer.exe\" \"%1\""
