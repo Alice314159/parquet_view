@@ -5,7 +5,7 @@ a = Analysis(
     ['parquet_viewer_duckdb.py'],
     pathex=[],
     binaries=[],
-    datas=[('app.ico', '.'), ('F:\\VesperSet\\duckDB_client\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\platforms', 'PyQt6/Qt6/plugins/platforms'), ('F:\\VesperSet\\duckDB_client\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\imageformats', 'PyQt6/Qt6/plugins/imageformats')],
+    datas=[('app.ico', '.'), ('F:\\VesperSet\\parquet_view\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\platforms', 'PyQt6/Qt6/plugins/platforms'), ('F:\\VesperSet\\parquet_view\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\imageformats', 'PyQt6/Qt6/plugins/imageformats')],
     hiddenimports=['duckdb'],
     hookspath=[],
     hooksconfig={},

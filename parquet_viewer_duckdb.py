@@ -260,10 +260,13 @@ class ParquetTab(QWidget):
             return False
 
     def update_tree(self):
-        """使用 DuckDB 直接对当前 parquet 做 DESCRIBE，更新文件结构树"""
+        """使用 DuckDB 扫描当前 parquet，推断列名和类型，并更新文件结构树。"""
+        from PyQt6.QtWidgets import QTreeWidgetItem
+        from PyQt6.QtGui import QFont
+
         self.tree_widget.clear()
 
-        # 没有文件就不显示
+        # 没有文件就不更新
         if not getattr(self, "file_path", None):
             return
 
@@ -271,7 +274,6 @@ class ParquetTab(QWidget):
         try:
             import duckdb
         except ImportError:
-            # 真的没有 duckdb，就简单提示一下
             root = QTreeWidgetItem(self.tree_widget)
             root.setText(0, "数据表")
             columns_node = QTreeWidgetItem(root)
@@ -283,7 +285,6 @@ class ParquetTab(QWidget):
             return
 
         if not getattr(self, "con", None):
-            # 你如果在别处已经创建 self.con，这里就会跳过
             self.con = duckdb.connect()
 
         root = QTreeWidgetItem(self.tree_widget)
@@ -295,16 +296,38 @@ class ParquetTab(QWidget):
         columns_node.setFont(0, QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
 
         try:
-            # ⭐ 关键：直接针对当前 parquet 文件做 DESCRIBE，不再依赖 self.df / self.table_name
-            rows = self.con.execute(
-                "DESCRIBE SELECT * FROM read_parquet(?)",
-                [self.file_path]
-            ).fetchall()  # 每行: (column_name, column_type, null, key, default, extra)
+            # 直接使用已经创建的 VIEW t 来获取类型信息
+            # 1️⃣ 先获取列名
+            rel = self.con.execute("SELECT * FROM t LIMIT 0")
+            desc = rel.description
+            col_names = [d[0] for d in desc]
 
-            for name, col_type, *_ in rows:
+            # 2️⃣ 对每一列使用 typeof() 从真实数据推断类型
+            for name in col_names:
+                # 手动给列名加双引号，并把内部的双引号转义成两连引号
+                escaped = name.replace('"', '""')
+                ident = f'"{escaped}"'
+
+                sql = f"SELECT typeof({ident}) FROM t WHERE {ident} IS NOT NULL LIMIT 1"
+
+                try:
+                    res = self.con.execute(sql).fetchone()
+                    if res and res[0] is not None:
+                        col_type = res[0]  # 例如 'DOUBLE', 'BIGINT', 'VARCHAR'
+                    else:
+                        col_type = "UNKNOWN"
+                except Exception:
+                    # 如果某列查询失败，尝试不加 WHERE 条件
+                    try:
+                        res = self.con.execute(f"SELECT typeof({ident}) FROM t LIMIT 1").fetchone()
+                        col_type = res[0] if res and res[0] else "UNKNOWN"
+                    except Exception:
+                        col_type = "ERROR"
+
                 item = QTreeWidgetItem(columns_node)
                 item.setText(0, name)
                 item.setText(1, col_type)
+
         except Exception as e:
             item = QTreeWidgetItem(columns_node)
             item.setText(0, "无法获取列信息")
