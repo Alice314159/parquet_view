@@ -10,10 +10,10 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
     QTableWidgetItem, QPushButton, QLineEdit, QLabel, QSplitter, QTreeWidget,
     QTreeWidgetItem, QHeaderView, QMessageBox, QFileDialog, QTabWidget,
-    QStyledItemDelegate
+    QStyledItemDelegate, QMenu
 )
 from PyQt6.QtCore import Qt, QSettings, QTimer
-from PyQt6.QtGui import QColor, QFont, QDragEnterEvent, QDropEvent, QIcon, QGuiApplication, QCursor
+from PyQt6.QtGui import QColor, QFont, QDragEnterEvent, QDropEvent, QIcon, QGuiApplication, QCursor, QFontMetrics
 
 
 def resource_path(relative: str) -> str:
@@ -26,14 +26,15 @@ def resource_path(relative: str) -> str:
 # ========================== 让编辑框更清晰的委托 ==========================
 class StrongEditorDelegate(QStyledItemDelegate):
     """为 QTableWidget 提供更醒目的编辑器（白底、深色字、粗蓝边框、进入时全选）"""
+
     def createEditor(self, parent, option, index):
         editor = QLineEdit(parent)
         editor.setFont(QFont("Microsoft YaHei UI", 10))
         editor.setStyleSheet("""
             QLineEdit {
                 background: #ffffff;
-                color: #111827;                /* 深灰文字 */
-                border: 2px solid #2563eb;     /* 明显的蓝色边框 */
+                color: #111827;
+                border: 2px solid #2563eb;
                 border-radius: 6px;
                 padding: 4px 6px;
                 selection-background-color: #2563eb;
@@ -45,18 +46,24 @@ class StrongEditorDelegate(QStyledItemDelegate):
 
     def setEditorData(self, editor, index):
         super().setEditorData(editor, index)
-        editor.selectAll()  # 进入编辑自动全选，便于直接覆盖输入
+        editor.selectAll()
+
+
 # =======================================================================
 
 
 class ParquetTab(QWidget):
-    """单个 Parquet 文件标签页（DuckDB 版本，不依赖 pandas/pyarrow）"""
+    """单个 Parquet 文件标签页（DuckDB 版本，支持排序和CSV导出）"""
+
     def __init__(self, file_path=None):
         super().__init__()
         self.file_path = None
         self.con: duckdb.DuckDBPyConnection | None = None
         self.table_cache = None
         self.columns = []
+        self.current_sql = "SELECT * FROM t LIMIT 100"  # 记录当前SQL
+        self.sort_column = None  # 当前排序列
+        self.sort_order = Qt.SortOrder.AscendingOrder  # 当前排序方向
         self.init_ui()
         if file_path:
             self.load_file(file_path)
@@ -152,11 +159,20 @@ class ParquetTab(QWidget):
         reset_btn = QPushButton("🔄 重置视图")
         reset_btn.setStyleSheet(btn_style)
         reset_btn.clicked.connect(self.reset_view)
+
+        # CSV 导出按钮（带下拉菜单）
+        export_csv_btn = QPushButton("📥 导出 CSV")
+        export_csv_btn.setStyleSheet(btn_style + "background-color: #8b5cf6;")
+        csv_menu = QMenu(self)
+        csv_menu.addAction("导出当前页", self.export_current_page_csv)
+        csv_menu.addAction("导出全部数据", self.export_all_csv)
+        export_csv_btn.setMenu(csv_menu)
+
         save_btn = QPushButton("💾 保存为 Parquet")
         save_btn.setStyleSheet(btn_style + "background-color: #059669;")
         save_btn.clicked.connect(self.save_file)
 
-        for b in (add_btn, del_btn, reset_btn, save_btn):
+        for b in (add_btn, del_btn, reset_btn, export_csv_btn, save_btn):
             hlay.addWidget(b)
 
         v.addWidget(toolbar)
@@ -177,10 +193,10 @@ class ParquetTab(QWidget):
         sql_line.setSpacing(10)
 
         self.sql_input = QLineEdit()
-        self.sql_input.setPlaceholderText("输入 SQL 查询... (例如: SELECT * FROM t LIMIT 100)")
+        self.sql_input.setPlaceholderText("输入 SQL 查询... (例如: SELECT * FROM t ORDER BY column_name LIMIT 100)")
         self.sql_input.setText("SELECT * FROM t LIMIT 100")
         self.sql_input.setMinimumHeight(38)
-        self.sql_input.returnPressed.connect(self.run_query)   # Enter 直接执行
+        self.sql_input.returnPressed.connect(self.run_query)
         sql_line.addWidget(self.sql_input)
 
         run_btn = QPushButton("▶ 运行")
@@ -211,12 +227,126 @@ class ParquetTab(QWidget):
         self.table_widget.verticalHeader().setVisible(True)
         self.table_widget.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # 安装“编辑态强化”委托
+        # 启用排序功能
+        self.table_widget.setSortingEnabled(False)  # 禁用默认排序，使用自定义排序
+        self.table_widget.horizontalHeader().sectionClicked.connect(self.on_header_clicked)
+
+        # 安装"编辑态强化"委托
         self.table_widget.setItemDelegate(StrongEditorDelegate(self.table_widget))
 
         c.addWidget(self.table_widget)
         v.addWidget(content)
         return right
+
+    # ---------- 列头点击排序 ----------
+    def on_header_clicked(self, logical_index):
+        """点击列头进行排序"""
+        if not self.con or not self.columns:
+            return
+
+        col_name = self.columns[logical_index]
+
+        # 切换排序方向
+        if self.sort_column == col_name:
+            self.sort_order = Qt.SortOrder.DescendingOrder if self.sort_order == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
+        else:
+            self.sort_column = col_name
+            self.sort_order = Qt.SortOrder.AscendingOrder
+
+        # 构建带排序的 SQL
+        order_dir = "ASC" if self.sort_order == Qt.SortOrder.AscendingOrder else "DESC"
+        escaped_col = col_name.replace('"', '""')
+
+        # 从当前 SQL 中提取 LIMIT 子句
+        current_sql = self.sql_input.text().strip().upper()
+        limit_clause = ""
+        if "LIMIT" in current_sql:
+            parts = self.sql_input.text().strip().split()
+            for i, part in enumerate(parts):
+                if part.upper() == "LIMIT" and i + 1 < len(parts):
+                    limit_clause = f" LIMIT {parts[i + 1]}"
+                    break
+
+        if not limit_clause:
+            limit_clause = " LIMIT 100"
+
+        # 构建新的 SQL（移除原有的 ORDER BY）
+        base_sql = "SELECT * FROM t"
+        sort_sql = f'{base_sql} ORDER BY "{escaped_col}" {order_dir}{limit_clause}'
+
+        try:
+            self.run_sql_to_table(sort_sql)
+            self.sql_input.setText(sort_sql)
+            arrow = "↑" if self.sort_order == Qt.SortOrder.AscendingOrder else "↓"
+            self.status_label.setText(f"状态: 按 {col_name} {arrow} 排序，共 {self.table_widget.rowCount()} 行")
+        except Exception as e:
+            QMessageBox.warning(self, "排序错误", f"排序失败:\n{e}")
+
+    # ---------- CSV 导出功能 ----------
+    def export_current_page_csv(self):
+        """导出当前页面显示的数据为 CSV"""
+        if self.table_widget.columnCount() == 0:
+            QMessageBox.information(self, "提示", "没有数据可导出。")
+            return
+
+        default_dir = os.path.dirname(self.file_path) if self.file_path else ""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出当前页为 CSV", default_dir, "CSV Files (*.csv)"
+        )
+        if not file_path:
+            return
+
+        try:
+            # 收集当前表格数据
+            cols = [self.table_widget.horizontalHeaderItem(i).text() for i in range(self.table_widget.columnCount())]
+            data = []
+            for r in range(self.table_widget.rowCount()):
+                row = []
+                for c in range(self.table_widget.columnCount()):
+                    it = self.table_widget.item(r, c)
+                    s = it.text() if it else ""
+                    row.append(s)
+                data.append(row)
+
+            # 写入临时表并导出
+            self._ensure_con()
+            self.con.execute("DROP TABLE IF EXISTS __tmp_csv__;")
+            cols_ddl = ", ".join(f'"{name}" VARCHAR' for name in cols)
+            self.con.execute(f"CREATE TABLE __tmp_csv__ ({cols_ddl});")
+            if data:
+                placeholders = ", ".join(["?"] * len(cols))
+                self.con.executemany(f'INSERT INTO __tmp_csv__ VALUES ({placeholders})', data)
+
+            self.con.execute(f"COPY __tmp_csv__ TO '{file_path.replace('\\', '/')}' (HEADER, DELIMITER ',');")
+            QMessageBox.information(self, "成功", f"当前页数据已导出！\n共 {len(data)} 行")
+            self.status_label.setText(f"状态: 已导出当前页到 {os.path.basename(file_path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出失败:\n{e}")
+
+    def export_all_csv(self):
+        """导出全部数据为 CSV（从原始 parquet 文件）"""
+        if not self.con or not self.file_path:
+            QMessageBox.information(self, "提示", "没有加载文件，无法导出全部数据。")
+            return
+
+        default_dir = os.path.dirname(self.file_path) if self.file_path else ""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "导出全部数据为 CSV", default_dir, "CSV Files (*.csv)"
+        )
+        if not file_path:
+            return
+
+        try:
+            # 统计总行数
+            total_rows = self.con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+
+            # 直接从 VIEW t 导出全部数据
+            self.con.execute(f"COPY t TO '{file_path.replace('\\', '/')}' (HEADER, DELIMITER ',');")
+
+            QMessageBox.information(self, "成功", f"全部数据已导出！\n共 {total_rows} 行")
+            self.status_label.setText(f"状态: 已导出全部数据到 {os.path.basename(file_path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"导出失败:\n{e}")
 
     # ---------- 数据读写 ----------
     def _ensure_con(self):
@@ -261,27 +391,9 @@ class ParquetTab(QWidget):
 
     def update_tree(self):
         """使用 DuckDB 扫描当前 parquet，推断列名和类型，并更新文件结构树。"""
-        from PyQt6.QtWidgets import QTreeWidgetItem
-        from PyQt6.QtGui import QFont
-
         self.tree_widget.clear()
 
-        # 没有文件就不更新
         if not getattr(self, "file_path", None):
-            return
-
-        # 确保有 duckdb 连接
-        try:
-            import duckdb
-        except ImportError:
-            root = QTreeWidgetItem(self.tree_widget)
-            root.setText(0, "数据表")
-            columns_node = QTreeWidgetItem(root)
-            columns_node.setText(0, "列 (Columns)")
-            item = QTreeWidgetItem(columns_node)
-            item.setText(0, "无法获取列信息")
-            item.setText(1, "duckdb 未安装")
-            self.tree_widget.expandAll()
             return
 
         if not getattr(self, "con", None):
@@ -296,15 +408,11 @@ class ParquetTab(QWidget):
         columns_node.setFont(0, QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
 
         try:
-            # 直接使用已经创建的 VIEW t 来获取类型信息
-            # 1️⃣ 先获取列名
             rel = self.con.execute("SELECT * FROM t LIMIT 0")
             desc = rel.description
             col_names = [d[0] for d in desc]
 
-            # 2️⃣ 对每一列使用 typeof() 从真实数据推断类型
             for name in col_names:
-                # 手动给列名加双引号，并把内部的双引号转义成两连引号
                 escaped = name.replace('"', '""')
                 ident = f'"{escaped}"'
 
@@ -313,11 +421,10 @@ class ParquetTab(QWidget):
                 try:
                     res = self.con.execute(sql).fetchone()
                     if res and res[0] is not None:
-                        col_type = res[0]  # 例如 'DOUBLE', 'BIGINT', 'VARCHAR'
+                        col_type = res[0]
                     else:
                         col_type = "UNKNOWN"
                 except Exception:
-                    # 如果某列查询失败，尝试不加 WHERE 条件
                     try:
                         res = self.con.execute(f"SELECT typeof({ident}) FROM t LIMIT 1").fetchone()
                         col_type = res[0] if res and res[0] else "UNKNOWN"
@@ -341,9 +448,11 @@ class ParquetTab(QWidget):
         rows = [dict(zip(self.columns, row)) for row in res.fetchall()]
 
         self.table_cache = rows
+        self.current_sql = sql
         self.display_data(self.columns, rows)
 
     def display_data(self, columns, rows):
+        """显示数据并智能设置列宽"""
         self.table_widget.clear()
         self.table_widget.setColumnCount(len(columns))
         self.table_widget.setHorizontalHeaderLabels(columns)
@@ -371,13 +480,68 @@ class ParquetTab(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table_widget.setItem(i, j, item)
 
-        self.table_widget.resizeColumnsToContents()
+        # ========== 智能列宽设置 ==========
+        # 获取字体度量
+        font = self.table_widget.font()
+        fm = QFontMetrics(font)
+        header_font = self.table_widget.horizontalHeader().font()
+        header_fm = QFontMetrics(header_font)
+
+        # 为每列计算最佳宽度
         for c in range(self.table_widget.columnCount()):
-            w = self.table_widget.columnWidth(c)
-            if w < 80:
-                self.table_widget.setColumnWidth(c, 80)
-            elif w > 220:
-                self.table_widget.setColumnWidth(c, 220)
+            # 1. 计算列标题宽度
+            header_text = self.table_widget.horizontalHeaderItem(c).text()
+            header_width = header_fm.horizontalAdvance(header_text) + 30  # 加边距
+
+            # 2. 计算内容最大宽度（采样前50行以提高性能）
+            max_content_width = 0
+            sample_rows = min(50, self.table_widget.rowCount())
+
+            for r in range(sample_rows):
+                item = self.table_widget.item(r, c)
+                if item and item.text():
+                    text = item.text()
+                    # 计算文本宽度
+                    text_width = fm.horizontalAdvance(text) + 30  # 加边距和图标空间
+                    max_content_width = max(max_content_width, text_width)
+
+            # 3. 取标题和内容宽度的较大值
+            optimal_width = max(header_width, max_content_width)
+
+            # 4. 应用合理的最小值和最大值限制
+            MIN_WIDTH = 100  # 最小宽度
+            MAX_WIDTH = 400  # 最大宽度（防止过宽）
+
+            # 特殊处理：超长文本列（如描述、备注等）可以更宽
+            if any(keyword in header_text.lower() for keyword in
+                   ['desc', 'note', 'comment', 'remark', '描述', '备注', '说明']):
+                MAX_WIDTH = 600
+
+            # 特殊处理：ID、代码等固定格式列可以更窄
+            if any(keyword in header_text.lower() for keyword in ['id', 'code', '代码', '编号']):
+                MIN_WIDTH = 80
+                MAX_WIDTH = 200
+
+            # 应用宽度限制
+            final_width = max(MIN_WIDTH, min(optimal_width, MAX_WIDTH))
+
+            self.table_widget.setColumnWidth(c, int(final_width))
+
+        # 5. 如果总宽度小于表格宽度，适当拉伸最后几列
+        total_width = sum(self.table_widget.columnWidth(c) for c in range(self.table_widget.columnCount()))
+        available_width = self.table_widget.viewport().width()
+
+        if total_width < available_width and self.table_widget.columnCount() > 0:
+            # 将剩余空间分配给最后几列（最多3列）
+            extra_space = available_width - total_width
+            cols_to_expand = min(3, self.table_widget.columnCount())
+            extra_per_col = extra_space // cols_to_expand
+
+            for i in range(cols_to_expand):
+                c = self.table_widget.columnCount() - 1 - i
+                current_width = self.table_widget.columnWidth(c)
+                new_width = min(current_width + extra_per_col, 600)  # 不超过600
+                self.table_widget.setColumnWidth(c, new_width)
 
     # ---------- 交互 ----------
     def run_query(self):
@@ -403,7 +567,7 @@ class ParquetTab(QWidget):
         for c in range(cols):
             it = QTableWidgetItem("")
             it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            it.setBackground(QColor(255, 255, 255))  # 新行底色改为白色，避免视觉冲突
+            it.setBackground(QColor(255, 255, 255))
             self.table_widget.setItem(r, c, it)
         self.table_widget.scrollToItem(self.table_widget.item(r, 0), QTableWidget.ScrollHint.PositionAtBottom)
         self.table_widget.selectRow(r)
@@ -424,6 +588,9 @@ class ParquetTab(QWidget):
         if not self.con:
             return
         try:
+            self.sort_column = None
+            self.sort_order = Qt.SortOrder.AscendingOrder
+            self.sql_input.setText("SELECT * FROM t LIMIT 100")
             self.run_sql_to_table("SELECT * FROM t LIMIT 100")
             self.status_label.setText("状态: 已重置为前 100 行")
         except Exception as e:
@@ -480,14 +647,15 @@ class ParquetViewer(QMainWindow):
         self.recent_files = []
         self.load_settings()
         self.init_ui()
+        self.apply_stylesheet()
 
         ico = resource_path("app.ico")
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
 
         self.setAcceptDrops(True)
+        QTimer.singleShot(100, self.center_on_active_screen)
 
-    # 多屏：始终居中到当前活动屏幕
     def center_on_active_screen(self):
         screen = QGuiApplication.screenAt(QCursor.pos())
         if screen is None and self.windowHandle() is not None:
@@ -502,7 +670,7 @@ class ParquetViewer(QMainWindow):
         self.move(geo.topLeft())
 
     def init_ui(self):
-        self.setWindowTitle('Parquet 文件查看器 (DuckDB)')
+        self.setWindowTitle('Parquet 文件查看器 (DuckDB) - 增强版')
         self.setGeometry(100, 100, 1400, 820)
 
         main_widget = QWidget()
@@ -513,192 +681,234 @@ class ParquetViewer(QMainWindow):
 
         toolbar = QWidget()
         toolbar.setObjectName("mainToolbar")
-        tl = QHBoxLayout(toolbar)
-        tl.setContentsMargins(20, 12, 20, 12)
+        toolbar_layout = QHBoxLayout(toolbar)
+        toolbar_layout.setContentsMargins(20, 12, 20, 12)
 
-        title_layout = QHBoxLayout()
-        icon_label = QLabel("📊")
-        icon_label.setFont(QFont("Segoe UI Emoji", 14))
-        title_layout.addWidget(icon_label)
-
-        title = QLabel("Parquet 文件查看器 (DuckDB)")
-        title.setFont(QFont("Microsoft YaHei UI", 13, QFont.Weight.Bold))
-        title_layout.addWidget(title)
-        title_layout.addStretch()
-
-        tl.addLayout(title_layout)
-        tl.addStretch()
-
-        open_btn = QPushButton("📁 打开文件")
+        open_btn = QPushButton("📂 打开文件")
+        open_btn.setStyleSheet("padding: 8px 20px; font-size: 10pt; font-weight: 600;")
         open_btn.clicked.connect(self.open_file)
-        open_btn.setMinimumHeight(36)
-        open_btn.setStyleSheet("font-size: 9pt; padding: 0 20px; font-weight: 600;")
-        tl.addWidget(open_btn)
+        toolbar_layout.addWidget(open_btn)
+
+        new_tab_btn = QPushButton("➕ 新建标签")
+        new_tab_btn.setStyleSheet("padding: 8px 20px; font-size: 10pt;")
+        new_tab_btn.clicked.connect(self.new_tab)
+        toolbar_layout.addWidget(new_tab_btn)
+
+        toolbar_layout.addStretch()
+
+        close_tab_btn = QPushButton("✖ 关闭当前标签")
+        close_tab_btn.setStyleSheet("padding: 8px 20px; font-size: 10pt;")
+        close_tab_btn.clicked.connect(self.close_current_tab)
+        toolbar_layout.addWidget(close_tab_btn)
 
         main_layout.addWidget(toolbar)
 
         self.tab_widget = QTabWidget()
         self.tab_widget.setTabsClosable(True)
-        self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.setMovable(True)
-        self.tab_widget.setDocumentMode(True)
-        self.tab_widget.tabBar().setTabsClosable(True)
-        self.tab_widget.tabBar().tabBarDoubleClicked.connect(self.on_tab_bar_double_clicked)
+        self.tab_widget.tabCloseRequested.connect(self.close_tab)
         main_layout.addWidget(self.tab_widget)
 
+        # 添加初始标签
         self.new_tab()
-        self.apply_styles()
 
-        QTimer.singleShot(0, self.center_on_active_screen)
+    def apply_stylesheet(self):
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f9fafb;
+            }
+            QWidget#mainToolbar {
+                background-color: #ffffff;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            QWidget#leftPanel {
+                background-color: #f3f4f6;
+                border-right: 1px solid #e5e7eb;
+            }
+            QWidget#titleWidget {
+                background-color: #ffffff;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            QWidget#infoCard {
+                background-color: #f9fafb;
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+            }
+            QWidget#toolbar {
+                background-color: #ffffff;
+                border-bottom: 1px solid #e5e7eb;
+            }
+            QWidget#contentWidget {
+                background-color: #ffffff;
+            }
+            QPushButton {
+                background-color: #3b82f6;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #2563eb;
+            }
+            QPushButton:pressed {
+                background-color: #1d4ed8;
+            }
+            QLineEdit {
+                background-color: #ffffff;
+                border: 1px solid #d1d5db;
+                border-radius: 6px;
+                padding: 8px 12px;
+                color: #111827;
+                font-size: 9pt;
+            }
+            QLineEdit:focus {
+                border: 2px solid #3b82f6;
+                padding: 7px 11px;
+            }
+            QTableWidget {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                gridline-color: #f3f4f6;
+            }
+            QTableWidget::item {
+                padding: 5px;
+                border-bottom: 1px solid #f3f4f6;
+            }
+            QTableWidget::item:selected {
+                background-color: #dbeafe;
+                color: #1e40af;
+            }
+            QHeaderView::section {
+                background-color: #f9fafb;
+                color: #374151;
+                padding: 8px;
+                border: none;
+                border-bottom: 2px solid #e5e7eb;
+                border-right: 1px solid #e5e7eb;
+                font-weight: 600;
+            }
+            QHeaderView::section:hover {
+                background-color: #f3f4f6;
+            }
+            QTreeWidget {
+                background-color: #ffffff;
+                border: none;
+                font-size: 9pt;
+            }
+            QTreeWidget::item {
+                padding: 5px;
+                border-bottom: 1px solid #f3f4f6;
+            }
+            QTreeWidget::item:selected {
+                background-color: #dbeafe;
+                color: #1e40af;
+            }
+            QTreeWidget::item:hover {
+                background-color: #f3f4f6;
+            }
+            QTabWidget::pane {
+                border: none;
+                background-color: #ffffff;
+            }
+            QTabBar::tab {
+                background-color: #f3f4f6;
+                color: #6b7280;
+                padding: 10px 20px;
+                margin-right: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }
+            QTabBar::tab:selected {
+                background-color: #ffffff;
+                color: #111827;
+                font-weight: 600;
+            }
+            QTabBar::tab:hover {
+                background-color: #e5e7eb;
+            }
+            QMenu {
+                background-color: #ffffff;
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+                padding: 5px;
+            }
+            QMenu::item {
+                padding: 8px 20px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #f3f4f6;
+            }
+        """)
 
-    def new_tab(self):
-        tab = ParquetTab()
-        idx = self.tab_widget.addTab(tab, "未命名")
-        self.tab_widget.setCurrentIndex(idx)
+    def load_settings(self):
+        recent = self.settings.value("recent_files", [])
+        if isinstance(recent, str):
+            recent = [recent]
+        self.recent_files = recent if recent else []
 
-    def on_tab_bar_double_clicked(self, index):
-        if index == -1:
-            self.new_tab()
-
-    def open_file(self):
-        last_dir = self.settings.value("last_directory", "")
-        file_path, _ = QFileDialog.getOpenFileName(self, "选择 Parquet 文件", last_dir, "Parquet Files (*.parquet)")
-        if file_path:
-            self.settings.setValue("last_directory", os.path.dirname(file_path))
-            self.add_recent_file(file_path)
-            self.open_file_in_tab(file_path)
-
-    def open_file_in_tab(self, file_path):
-        for i in range(self.tab_widget.count()):
-            tab = self.tab_widget.widget(i)
-            if isinstance(tab, ParquetTab) and tab.file_path == file_path:
-                self.tab_widget.setCurrentIndex(i)
-                return
-        tab = ParquetTab()
-        if tab.load_file(file_path):
-            file_name = os.path.basename(file_path)
-            current_tab = self.tab_widget.currentWidget()
-            if isinstance(current_tab, ParquetTab) and current_tab.file_path is None:
-                self.tab_widget.removeTab(self.tab_widget.currentIndex())
-            idx = self.tab_widget.addTab(tab, file_name)
-            self.tab_widget.setCurrentIndex(idx)
-
-    def close_tab(self, index):
-        if self.tab_widget.count() > 1:
-            self.tab_widget.removeTab(index)
-        else:
-            self.tab_widget.removeTab(index)
-            self.new_tab()
+    def save_settings(self):
+        self.settings.setValue("recent_files", self.recent_files[:10])
 
     def add_recent_file(self, file_path):
         if file_path in self.recent_files:
             self.recent_files.remove(file_path)
         self.recent_files.insert(0, file_path)
-        self.recent_files = self.recent_files[:10]
         self.save_settings()
 
-    def load_settings(self):
-        self.recent_files = self.settings.value("recent_files", [])
-        if not isinstance(self.recent_files, list):
-            self.recent_files = []
+    def new_tab(self):
+        tab = ParquetTab()
+        idx = self.tab_widget.addTab(tab, "新标签")
+        self.tab_widget.setCurrentIndex(idx)
 
-    def save_settings(self):
-        self.settings.setValue("recent_files", self.recent_files)
+    def open_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "打开 Parquet 文件", "", "Parquet Files (*.parquet);;All Files (*)"
+        )
+        if file_path:
+            self.open_file_in_new_tab(file_path)
 
-    def closeEvent(self, event):
-        self.save_settings()
-        event.accept()
+    def open_file_in_new_tab(self, file_path):
+        tab = ParquetTab(file_path)
+        file_name = os.path.basename(file_path)
+        idx = self.tab_widget.addTab(tab, file_name)
+        self.tab_widget.setCurrentIndex(idx)
+        self.add_recent_file(file_path)
+
+    def close_tab(self, index):
+        if self.tab_widget.count() > 1:
+            self.tab_widget.removeTab(index)
+
+    def close_current_tab(self):
+        idx = self.tab_widget.currentIndex()
+        if idx >= 0 and self.tab_widget.count() > 1:
+            self.tab_widget.removeTab(idx)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
-            for url in event.mimeData().urls():
-                fp = url.toLocalFile()
-                if fp.lower().endswith('.parquet'):
-                    event.acceptProposedAction()
-                    return
-        event.ignore()
-
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
             event.acceptProposedAction()
-        else:
-            event.ignore()
 
     def dropEvent(self, event: QDropEvent):
-        if not event.mimeData().hasUrls():
-            event.ignore()
-            return
-        files = []
         for url in event.mimeData().urls():
-            fp = url.toLocalFile()
-            if fp.lower().endswith('.parquet') and os.path.exists(fp):
-                files.append(fp)
-        if not files:
-            QMessageBox.warning(self, "警告", "请拖入 .parquet 文件")
-            event.ignore()
-            return
-        for fp in files:
-            self.settings.setValue("last_directory", os.path.dirname(fp))
-            self.add_recent_file(fp)
-            self.open_file_in_tab(fp)
-        event.acceptProposedAction()
-
-    def apply_styles(self):
-        self.setStyleSheet("""
-            QMainWindow { background-color: #f5f5f5; }
-            QWidget#mainToolbar { background-color: white; border-bottom: 1px solid #e0e0e0; }
-            QWidget#leftPanel { background-color: #fafafa; border-right: 1px solid #e0e0e0; }
-            QWidget#rightPanel { background-color: white; }
-            QWidget#titleWidget { background-color: #fafafa; border-bottom: 1px solid #e5e7eb; }
-            QWidget#infoCard { background-color: white; border: 1px solid #e5e7eb; border-radius: 6px; margin-top: 8px; }
-            QWidget#toolbar { background-color: white; border-bottom: 1px solid #e5e7eb; }
-            QWidget#contentWidget { background-color: white; }
-            QPushButton { background-color: #3b82f6; color: white; border: none; border-radius: 6px; font-family: "Microsoft YaHei UI"; }
-            QPushButton:hover { background-color: #2563eb; }
-            QPushButton:pressed { background-color: #1d4ed8; }
-            QLineEdit { padding: 10px 14px; border: 1px solid #d1d5db; border-radius: 6px; background-color: white; font-family: "Microsoft YaHei UI"; font-size: 9pt; }
-            QLineEdit:focus { border: 1.5px solid #3b82f6; }
-            QTableWidget { background-color: white; border: 1px solid #e5e7eb; border-radius: 8px; gridline-color: #f0f0f0; }
-            QTableWidget::item { padding: 6px; border: none; }
-            QTableWidget::item:selected { background-color: #eef6ff; color: #0c4a6e; }   /* 选中底色更浅 */
-            QTableWidget::item:alternate { background-color: #fafafa; }
-            QTableWidget::item:focus { background-color: #ffffff; border: none; }      /* 编辑态单元格保持白底 */
-            QHeaderView::section { background-color: #f9fafb; padding: 10px 12px; border: none; border-bottom: 1px solid #e5e7eb; border-right: 1px solid #f0f0f0; font-weight: 600; font-size: 9pt; color: #374151; font-family: "Microsoft YaHei UI"; }
-            QTreeWidget { background-color: white; border: none; border-top: 1px solid #e5e7eb; outline: none; font-size: 9pt; }
-            QTreeWidget::item:hover { background-color: #f3f4f6; }
-            QTreeWidget::item:selected { background-color: #e0f2fe; color: #0c4a6e; }
-            QTabBar::tab { background-color: #f5f5f5; color: #6b7280; padding: 10px 20px; margin-right: 2px; border-top-left-radius: 6px; border-top-right-radius: 6px; font-family: "Microsoft YaHei UI"; font-size: 9pt; }
-            QTabBar::tab:selected { background-color: white; color: #1f2937; font-weight: 500; }
-            QTabBar::tab:hover:!selected { background-color: #e5e7eb; }
-            QLabel { color: #374151; }
-        """)
+            file_path = url.toLocalFile()
+            if file_path.lower().endswith('.parquet'):
+                self.open_file_in_new_tab(file_path)
 
 
 def main():
-    # 高 DPI 适配
-    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
-    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
-
     app = QApplication(sys.argv)
-    app.setApplicationName("Parquet Viewer (DuckDB)")
-    app.setOrganizationName("ParquetViewer")
+    app.setStyle('Fusion')
 
-    ico = resource_path("app.ico")
-    if os.path.exists(ico):
-        app.setWindowIcon(QIcon(ico))
+    # 设置应用字体
+    app.setFont(QFont("Microsoft YaHei UI", 9))
 
-    win = ParquetViewer()
-    win.show()
-
-    # 双击文件打开
-    if len(sys.argv) > 1:
-        fp = sys.argv[1]
-        if os.path.exists(fp) and fp.lower().endswith(".parquet"):
-            win.open_file_in_tab(fp)
+    viewer = ParquetViewer()
+    viewer.show()
 
     sys.exit(app.exec())
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
-
