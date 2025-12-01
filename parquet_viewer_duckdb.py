@@ -1123,9 +1123,19 @@ def main():
     app.setFont(QFont("Microsoft YaHei UI", 9))
 
     viewer = ParquetViewer()
+
+    # -------------------------------
+    # ⭐⭐ 关键补丁：处理双击打开文件 ⭐⭐
+    # -------------------------------
+    if len(sys.argv) > 1:
+        arg = sys.argv[1]
+        if arg.lower().endswith(".parquet") and os.path.exists(arg):
+            viewer.open_file_in_new_tab(arg)
+
     viewer.show()
 
     sys.exit(app.exec())
+
 
 
 if __name__ == "__main__":
