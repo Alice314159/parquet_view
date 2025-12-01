@@ -13,7 +13,10 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QMenu
 )
 from PyQt6.QtCore import Qt, QSettings, QTimer
-from PyQt6.QtGui import QColor, QFont, QDragEnterEvent, QDropEvent, QIcon, QGuiApplication, QCursor, QFontMetrics
+from PyQt6.QtGui import (
+    QColor, QFont, QDragEnterEvent, QDropEvent,
+    QIcon, QGuiApplication, QCursor, QFontMetrics, QIntValidator
+)
 
 
 def resource_path(relative: str) -> str:
@@ -26,7 +29,6 @@ def resource_path(relative: str) -> str:
 # ========================== 让编辑框更清晰的委托 ==========================
 class StrongEditorDelegate(QStyledItemDelegate):
     """为 QTableWidget 提供更醒目的编辑器（白底、深色字、粗蓝边框、进入时全选）"""
-
     def createEditor(self, parent, option, index):
         editor = QLineEdit(parent)
         editor.setFont(QFont("Microsoft YaHei UI", 10))
@@ -47,26 +49,40 @@ class StrongEditorDelegate(QStyledItemDelegate):
     def setEditorData(self, editor, index):
         super().setEditorData(editor, index)
         editor.selectAll()
-
-
 # =======================================================================
 
 
 class ParquetTab(QWidget):
-    """单个 Parquet 文件标签页（DuckDB 版本，支持排序和CSV导出）"""
-
+    """单个 Parquet 文件标签页（DuckDB 版本，支持排序、CSV 导出、分页）"""
     def __init__(self, file_path=None):
         super().__init__()
-        self.file_path = None
+        self.file_path: str | None = None
         self.con: duckdb.DuckDBPyConnection | None = None
         self.table_cache = None
-        self.columns = []
-        self.current_sql = "SELECT * FROM t LIMIT 100"  # 记录当前SQL
-        self.sort_column = None  # 当前排序列
-        self.sort_order = Qt.SortOrder.AscendingOrder  # 当前排序方向
+        self.columns: list[str] = []
+        self.current_sql = "SELECT * FROM t LIMIT 100"
+
+        # ====== 分页相关 ======
+        self.page_size = 100
+        self.current_page = 1
+        self.total_rows = 0
+        self.total_pages = 1
+        self.base_sql = "SELECT * FROM t"
+        # Qt 控件稍后在 create_right_panel 里赋值
+        self.page_info_label: QLabel | None = None
+        self.prev_btn: QPushButton | None = None
+        self.next_btn: QPushButton | None = None
+        self.page_input: QLineEdit | None = None
+        # ======================
+
+        self.sort_column = None
+        self.sort_order = Qt.SortOrder.AscendingOrder
+
         self.init_ui()
         if file_path:
             self.load_file(file_path)
+
+    # ------------------------------------------------------------------ UI
 
     def init_ui(self):
         layout = QHBoxLayout(self)
@@ -136,31 +152,32 @@ class ParquetTab(QWidget):
         hlay.setContentsMargins(20, 15, 20, 15)
 
         file_info_layout = QHBoxLayout()
-        file_icon = QLabel("📄")
-        file_icon.setFont(QFont("Segoe UI Emoji", 12))
-        file_info_layout.addWidget(file_icon)
+        # file_icon = QLabel("📄")
+        # file_icon.setFont(QFont("Segoe UI Emoji", 12))
+        # file_info_layout.addWidget(file_icon)
 
-        self.file_label = QLabel("未打开文件")
-        self.file_label.setFont(QFont("Microsoft YaHei UI", 10))
-        self.file_label.setStyleSheet("color: #374151;")
-        file_info_layout.addWidget(self.file_label)
-        file_info_layout.addStretch()
-        hlay.addLayout(file_info_layout)
-        hlay.addStretch()
+        # self.file_label = QLabel("未打开文件")
+        # self.file_label.setFont(QFont("Microsoft YaHei UI", 10))
+        # self.file_label.setStyleSheet("color: #374151;")
+        # file_info_layout.addWidget(self.file_label)
+        # file_info_layout.addStretch()
+        # hlay.addLayout(file_info_layout)
+        # hlay.addStretch()
 
         btn_style = "padding: 7px 16px; font-size: 9pt;"
 
         add_btn = QPushButton("➕ 新增行")
         add_btn.setStyleSheet(btn_style)
         add_btn.clicked.connect(self.add_row)
+
         del_btn = QPushButton("🗑️ 删除选中")
         del_btn.setStyleSheet(btn_style)
         del_btn.clicked.connect(self.delete_selected)
+
         reset_btn = QPushButton("🔄 重置视图")
         reset_btn.setStyleSheet(btn_style)
         reset_btn.clicked.connect(self.reset_view)
 
-        # CSV 导出按钮（带下拉菜单）
         export_csv_btn = QPushButton("📥 导出 CSV")
         export_csv_btn.setStyleSheet(btn_style + "background-color: #8b5cf6;")
         csv_menu = QMenu(self)
@@ -193,7 +210,9 @@ class ParquetTab(QWidget):
         sql_line.setSpacing(10)
 
         self.sql_input = QLineEdit()
-        self.sql_input.setPlaceholderText("输入 SQL 查询... (例如: SELECT * FROM t ORDER BY column_name LIMIT 100)")
+        self.sql_input.setPlaceholderText(
+            "输入 SQL 查询... (例如: SELECT * FROM t WHERE open < 100 ORDER BY trade_date DESC)"
+        )
         self.sql_input.setText("SELECT * FROM t LIMIT 100")
         self.sql_input.setMinimumHeight(38)
         self.sql_input.returnPressed.connect(self.run_query)
@@ -213,34 +232,149 @@ class ParquetTab(QWidget):
         self.status_label.setStyleSheet("color: #6b7280; padding: 5px 0;")
         c.addWidget(self.status_label)
 
+        # ===== 分页工具条 =====
+        # ===== 分页工具条 =====
+        pager_line = QHBoxLayout()
+        pager_line.setSpacing(10)
+
+        # 左边不再重复显示行数/总页，只保留一个占位空白
+        spacer = QLabel("")
+        spacer.setFont(QFont("Microsoft YaHei UI", 8))
+        spacer.setStyleSheet("color: #6b7280;")
+        pager_line.addWidget(spacer)
+        pager_line.addStretch()
+
+        # 上一页按钮（符号）
+        self.prev_btn = QPushButton("⟨")
+        self.prev_btn.setFixedSize(32, 26)
+        self.prev_btn.clicked.connect(self.prev_page)
+        pager_line.addWidget(self.prev_btn)
+
+        # 页码输入框：显示“当前页/总页”，也可手动输入页码回车跳转
+        self.page_input = QLineEdit()
+        self.page_input.setPlaceholderText("页")
+        self.page_input.setFixedWidth(80)
+        self.page_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_input.returnPressed.connect(self.goto_page)
+        pager_line.addWidget(self.page_input)
+
+        # 下一页按钮（符号）
+        self.next_btn = QPushButton("⟩")
+        self.next_btn.setFixedSize(32, 26)
+        self.next_btn.clicked.connect(self.next_page)
+        pager_line.addWidget(self.next_btn)
+
+        c.addLayout(pager_line)
+        # ========================
+
+        # ========================
+
         self.table_widget = QTableWidget()
         self.table_widget.setAlternatingRowColors(True)
         self.table_widget.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_widget.verticalHeader().setDefaultSectionSize(36)
         self.table_widget.verticalHeader().setMinimumSectionSize(36)
         self.table_widget.setFont(QFont("Microsoft YaHei UI", 9))
-        self.table_widget.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked |
-                                          QTableWidget.EditTrigger.EditKeyPressed |
-                                          QTableWidget.EditTrigger.AnyKeyPressed)
-        self.table_widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self.table_widget.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked
+            | QTableWidget.EditTrigger.EditKeyPressed
+            | QTableWidget.EditTrigger.AnyKeyPressed
+        )
+        self.table_widget.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Interactive
+        )
         self.table_widget.horizontalHeader().setStretchLastSection(True)
         self.table_widget.verticalHeader().setVisible(True)
-        self.table_widget.verticalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.table_widget.verticalHeader().setDefaultAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
 
-        # 启用排序功能
-        self.table_widget.setSortingEnabled(False)  # 禁用默认排序，使用自定义排序
-        self.table_widget.horizontalHeader().sectionClicked.connect(self.on_header_clicked)
+        self.table_widget.setSortingEnabled(False)
+        self.table_widget.horizontalHeader().sectionClicked.connect(
+            self.on_header_clicked
+        )
 
-        # 安装"编辑态强化"委托
         self.table_widget.setItemDelegate(StrongEditorDelegate(self.table_widget))
 
         c.addWidget(self.table_widget)
         v.addWidget(content)
         return right
 
-    # ---------- 列头点击排序 ----------
+    # ==================================================================
+    # 分页辅助
+    # ==================================================================
+    def _update_pager_display(self):
+        """更新分页显示：按钮启用状态 + 输入框里的 “当前页/总页” 文本"""
+        self.total_pages = max(1, (self.total_rows + self.page_size - 1) // self.page_size)
+        if self.current_page > self.total_pages:
+            self.current_page = self.total_pages
+
+        # 在输入框内显示“当前页/总页”
+        if self.page_input:
+            self.page_input.setText(f"{self.current_page}/{self.total_pages}")
+
+        # 首页/末页按钮置灰
+        if self.prev_btn:
+            self.prev_btn.setEnabled(self.current_page > 1)
+        if self.next_btn:
+            self.next_btn.setEnabled(self.current_page < self.total_pages)
+
+    def _refresh_current_page(self):
+        """根据 base_sql + current_page + page_size 生成分页 SQL 并显示"""
+        if not self.con:
+            return
+        offset = (self.current_page - 1) * self.page_size
+        page_sql = f"SELECT * FROM ({self.base_sql}) sub LIMIT {self.page_size} OFFSET {offset}"
+        self.current_sql = page_sql
+        self.run_sql_to_table(page_sql)
+        self._update_pager_display()
+        self.status_label.setText(f"状态: 第 {self.current_page} 页查询成功")
+
+
+    def _recount_total_rows(self):
+        """根据 base_sql 重新统计总行数"""
+        try:
+            count_sql = f"SELECT COUNT(*) FROM ({self.base_sql}) sub"
+            self.total_rows = self.con.execute(count_sql).fetchone()[0]
+        except Exception:
+            try:
+                self.total_rows = self.con.execute(
+                    f"SELECT COUNT(*) FROM ({self.base_sql})"
+                ).fetchone()[0]
+            except Exception:
+                self.total_rows = self.table_widget.rowCount()
+
+    def _prepare_base_sql_from_input(self):
+        """
+        从输入框中取出 SQL，去掉尾部 LIMIT / OFFSET，作为 base_sql。
+        若用户写了 LIMIT N，则把 N 当作 page_size。
+        """
+        text = self.sql_input.text().strip().rstrip(";")
+        if not text:
+            text = "SELECT * FROM t"
+
+        tokens = text.split()
+        uppers = [t.upper() for t in tokens]
+        page_size = self.page_size
+
+        if "LIMIT" in uppers:
+            idx = uppers.index("LIMIT")
+            if idx + 1 < len(tokens):
+                try:
+                    page_size = int(tokens[idx + 1])
+                except ValueError:
+                    pass
+            tokens = tokens[:idx]
+            text = " ".join(tokens)
+
+        self.base_sql = text.strip() or "SELECT * FROM t"
+        self.page_size = max(1, page_size)
+
+    # ==================================================================
+    # 排序 & CSV 导出
+    # ==================================================================
     def on_header_clicked(self, logical_index):
-        """点击列头进行排序"""
+        """点击列头进行排序，并同步更新 SQL 输入框"""
         if not self.con or not self.columns:
             return
 
@@ -248,41 +382,58 @@ class ParquetTab(QWidget):
 
         # 切换排序方向
         if self.sort_column == col_name:
-            self.sort_order = Qt.SortOrder.DescendingOrder if self.sort_order == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
+            self.sort_order = (
+                Qt.SortOrder.DescendingOrder
+                if self.sort_order == Qt.SortOrder.AscendingOrder
+                else Qt.SortOrder.AscendingOrder
+            )
         else:
             self.sort_column = col_name
             self.sort_order = Qt.SortOrder.AscendingOrder
 
-        # 构建带排序的 SQL
         order_dir = "ASC" if self.sort_order == Qt.SortOrder.AscendingOrder else "DESC"
         escaped_col = col_name.replace('"', '""')
 
-        # 从当前 SQL 中提取 LIMIT 子句
-        current_sql = self.sql_input.text().strip().upper()
+        # ========= 基于当前 SQL 生成新的带 ORDER BY 的 SQL =========
+        raw_sql = self.sql_input.text().strip()
+        if not raw_sql:
+            raw_sql = "SELECT * FROM t LIMIT 100"
+
+        upper = raw_sql.upper()
+
+        # 先拆出 LIMIT 子句
         limit_clause = ""
-        if "LIMIT" in current_sql:
-            parts = self.sql_input.text().strip().split()
-            for i, part in enumerate(parts):
-                if part.upper() == "LIMIT" and i + 1 < len(parts):
-                    limit_clause = f" LIMIT {parts[i + 1]}"
-                    break
+        limit_pos = upper.rfind(" LIMIT ")
+        if limit_pos != -1:
+            limit_clause = raw_sql[limit_pos:].strip()
+            base_sql = raw_sql[:limit_pos].strip()
+        else:
+            base_sql = raw_sql
+            limit_clause = "LIMIT 100"
 
-        if not limit_clause:
-            limit_clause = " LIMIT 100"
+        # 再去掉旧的 ORDER BY（只查找 LIMIT 前面的部分）
+        upper_base = base_sql.upper()
+        order_pos = upper_base.rfind(" ORDER BY ")
+        if order_pos != -1:
+            base_sql = base_sql[:order_pos].strip()
 
-        # 构建新的 SQL（移除原有的 ORDER BY）
-        base_sql = "SELECT * FROM t"
-        sort_sql = f'{base_sql} ORDER BY "{escaped_col}" {order_dir}{limit_clause}'
+        # 如果完全没写 FROM t，就简单退回 SELECT * FROM t
+        if " FROM " not in upper_base:
+            base_sql = "SELECT * FROM t"
+
+        # 组新 SQL
+        sort_sql = f'{base_sql} ORDER BY "{escaped_col}" {order_dir} {limit_clause}'.strip()
 
         try:
             self.run_sql_to_table(sort_sql)
             self.sql_input.setText(sort_sql)
             arrow = "↑" if self.sort_order == Qt.SortOrder.AscendingOrder else "↓"
-            self.status_label.setText(f"状态: 按 {col_name} {arrow} 排序，共 {self.table_widget.rowCount()} 行")
+            self.status_label.setText(
+                f"状态: 按 {col_name} {arrow} 排序，当前页 {self.table_widget.rowCount()} 行"
+            )
         except Exception as e:
             QMessageBox.warning(self, "排序错误", f"排序失败:\n{e}")
 
-    # ---------- CSV 导出功能 ----------
     def export_current_page_csv(self):
         """导出当前页面显示的数据为 CSV"""
         if self.table_widget.columnCount() == 0:
@@ -297,8 +448,10 @@ class ParquetTab(QWidget):
             return
 
         try:
-            # 收集当前表格数据
-            cols = [self.table_widget.horizontalHeaderItem(i).text() for i in range(self.table_widget.columnCount())]
+            cols = [
+                self.table_widget.horizontalHeaderItem(i).text()
+                for i in range(self.table_widget.columnCount())
+            ]
             data = []
             for r in range(self.table_widget.rowCount()):
                 row = []
@@ -308,23 +461,31 @@ class ParquetTab(QWidget):
                     row.append(s)
                 data.append(row)
 
-            # 写入临时表并导出
             self._ensure_con()
             self.con.execute("DROP TABLE IF EXISTS __tmp_csv__;")
             cols_ddl = ", ".join(f'"{name}" VARCHAR' for name in cols)
             self.con.execute(f"CREATE TABLE __tmp_csv__ ({cols_ddl});")
             if data:
                 placeholders = ", ".join(["?"] * len(cols))
-                self.con.executemany(f'INSERT INTO __tmp_csv__ VALUES ({placeholders})', data)
+                self.con.executemany(
+                    f"INSERT INTO __tmp_csv__ VALUES ({placeholders})", data
+                )
 
-            self.con.execute(f"COPY __tmp_csv__ TO '{file_path.replace('\\', '/')}' (HEADER, DELIMITER ',');")
-            QMessageBox.information(self, "成功", f"当前页数据已导出！\n共 {len(data)} 行")
-            self.status_label.setText(f"状态: 已导出当前页到 {os.path.basename(file_path)}")
+            self.con.execute(
+                f"COPY __tmp_csv__ TO '{file_path.replace('\\', '/')}' "
+                "(HEADER, DELIMITER ',');"
+            )
+            QMessageBox.information(
+                self, "成功", f"当前页数据已导出！\n共 {len(data)} 行"
+            )
+            self.status_label.setText(
+                f"状态: 已导出当前页到 {os.path.basename(file_path)}"
+            )
         except Exception as e:
             QMessageBox.critical(self, "错误", f"导出失败:\n{e}")
 
     def export_all_csv(self):
-        """导出全部数据为 CSV（从原始 parquet 文件）"""
+        """导出全部数据为 CSV（从 VIEW t）"""
         if not self.con or not self.file_path:
             QMessageBox.information(self, "提示", "没有加载文件，无法导出全部数据。")
             return
@@ -337,18 +498,22 @@ class ParquetTab(QWidget):
             return
 
         try:
-            # 统计总行数
             total_rows = self.con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
-
-            # 直接从 VIEW t 导出全部数据
-            self.con.execute(f"COPY t TO '{file_path.replace('\\', '/')}' (HEADER, DELIMITER ',');")
-
-            QMessageBox.information(self, "成功", f"全部数据已导出！\n共 {total_rows} 行")
-            self.status_label.setText(f"状态: 已导出全部数据到 {os.path.basename(file_path)}")
+            self.con.execute(
+                f"COPY t TO '{file_path.replace('\\', '/')}' (HEADER, DELIMITER ',');"
+            )
+            QMessageBox.information(
+                self, "成功", f"全部数据已导出！\n共 {total_rows} 行"
+            )
+            self.status_label.setText(
+                f"状态: 已导出全部数据到 {os.path.basename(file_path)}"
+            )
         except Exception as e:
             QMessageBox.critical(self, "错误", f"导出失败:\n{e}")
 
-    # ---------- 数据读写 ----------
+    # ==================================================================
+    # 数据读写 / 更新树
+    # ==================================================================
     def _ensure_con(self):
         if self.con is None:
             self.con = duckdb.connect()
@@ -363,27 +528,29 @@ class ParquetTab(QWidget):
             self._ensure_con()
             self.file_path = file_path
 
-            # 以 VIEW 形式映射 parquet
             self.con.execute("DROP VIEW IF EXISTS t;")
-            self.con.execute(f"CREATE VIEW t AS SELECT * FROM parquet_scan('{file_path.replace('\\', '/')}');")
+            self.con.execute(
+                f"CREATE VIEW t AS SELECT * FROM parquet_scan('{file_path.replace('\\', '/')}');"
+            )
 
-            # 读取 schema
             meta = self.con.execute("SELECT * FROM t LIMIT 1")
             self.columns = [desc[0] for desc in meta.description] if meta.description else []
 
-            # 文件信息
             file_name = os.path.basename(file_path)
-            self.file_label.setText(file_name)
+            #self.file_label.setText(file_name)
             size_mb = os.path.getsize(file_path) / 1024 / 1024
-            total_rows = self.con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
+
+            self.base_sql = "SELECT * FROM t"
+            self.page_size = 100
+            self.current_page = 1
+            self.total_rows = self.con.execute("SELECT COUNT(*) FROM t").fetchone()[0]
 
             self.file_info_label.setText(
-                f"文件: {file_name}\n大小: {size_mb:.2f} MB\n行数: {total_rows}\n列数: {len(self.columns)}"
+                f"文件: {file_name}\n大小: {size_mb:.2f} MB\n行数: {self.total_rows}\n列数: {len(self.columns)}"
             )
 
             self.update_tree()
-            self.run_sql_to_table("SELECT * FROM t LIMIT 100")
-            self.status_label.setText(f"状态: 成功加载，预览 100 行（总 {total_rows}）")
+            self._refresh_current_page()
             return True
         except Exception as e:
             QMessageBox.critical(self, "错误", f"无法打开文件:\n{e}")
@@ -395,7 +562,6 @@ class ParquetTab(QWidget):
 
         if not getattr(self, "file_path", None):
             return
-
         if not getattr(self, "con", None):
             self.con = duckdb.connect()
 
@@ -426,7 +592,9 @@ class ParquetTab(QWidget):
                         col_type = "UNKNOWN"
                 except Exception:
                     try:
-                        res = self.con.execute(f"SELECT typeof({ident}) FROM t LIMIT 1").fetchone()
+                        res = self.con.execute(
+                            f"SELECT typeof({ident}) FROM t LIMIT 1"
+                        ).fetchone()
                         col_type = res[0] if res and res[0] else "UNKNOWN"
                     except Exception:
                         col_type = "ERROR"
@@ -442,13 +610,14 @@ class ParquetTab(QWidget):
 
         self.tree_widget.expandAll()
 
+    # ==================================================================
+    # 显示数据
+    # ==================================================================
     def run_sql_to_table(self, sql: str):
         res = self.con.execute(sql)
         self.columns = [desc[0] for desc in res.description] if res.description else []
         rows = [dict(zip(self.columns, row)) for row in res.fetchall()]
-
         self.table_cache = rows
-        self.current_sql = sql
         self.display_data(self.columns, rows)
 
     def display_data(self, columns, rows):
@@ -480,59 +649,48 @@ class ParquetTab(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table_widget.setItem(i, j, item)
 
-        # ========== 智能列宽设置 ==========
-        # 获取字体度量
         font = self.table_widget.font()
         fm = QFontMetrics(font)
         header_font = self.table_widget.horizontalHeader().font()
         header_fm = QFontMetrics(header_font)
 
-        # 为每列计算最佳宽度
         for c in range(self.table_widget.columnCount()):
-            # 1. 计算列标题宽度
             header_text = self.table_widget.horizontalHeaderItem(c).text()
-            header_width = header_fm.horizontalAdvance(header_text) + 30  # 加边距
+            header_width = header_fm.horizontalAdvance(header_text) + 30
 
-            # 2. 计算内容最大宽度（采样前50行以提高性能）
             max_content_width = 0
             sample_rows = min(50, self.table_widget.rowCount())
-
             for r in range(sample_rows):
                 item = self.table_widget.item(r, c)
                 if item and item.text():
                     text = item.text()
-                    # 计算文本宽度
-                    text_width = fm.horizontalAdvance(text) + 30  # 加边距和图标空间
+                    text_width = fm.horizontalAdvance(text) + 30
                     max_content_width = max(max_content_width, text_width)
 
-            # 3. 取标题和内容宽度的较大值
             optimal_width = max(header_width, max_content_width)
 
-            # 4. 应用合理的最小值和最大值限制
-            MIN_WIDTH = 100  # 最小宽度
-            MAX_WIDTH = 400  # 最大宽度（防止过宽）
+            MIN_WIDTH = 100
+            MAX_WIDTH = 400
 
-            # 特殊处理：超长文本列（如描述、备注等）可以更宽
-            if any(keyword in header_text.lower() for keyword in
-                   ['desc', 'note', 'comment', 'remark', '描述', '备注', '说明']):
+            if any(
+                kw in header_text.lower()
+                for kw in ["desc", "note", "comment", "remark", "描述", "备注", "说明"]
+            ):
                 MAX_WIDTH = 600
 
-            # 特殊处理：ID、代码等固定格式列可以更窄
-            if any(keyword in header_text.lower() for keyword in ['id', 'code', '代码', '编号']):
+            if any(kw in header_text.lower() for kw in ["id", "code", "代码", "编号"]):
                 MIN_WIDTH = 80
                 MAX_WIDTH = 200
 
-            # 应用宽度限制
             final_width = max(MIN_WIDTH, min(optimal_width, MAX_WIDTH))
-
             self.table_widget.setColumnWidth(c, int(final_width))
 
-        # 5. 如果总宽度小于表格宽度，适当拉伸最后几列
-        total_width = sum(self.table_widget.columnWidth(c) for c in range(self.table_widget.columnCount()))
+        total_width = sum(
+            self.table_widget.columnWidth(c) for c in range(self.table_widget.columnCount())
+        )
         available_width = self.table_widget.viewport().width()
 
         if total_width < available_width and self.table_widget.columnCount() > 0:
-            # 将剩余空间分配给最后几列（最多3列）
             extra_space = available_width - total_width
             cols_to_expand = min(3, self.table_widget.columnCount())
             extra_per_col = extra_space // cols_to_expand
@@ -540,23 +698,70 @@ class ParquetTab(QWidget):
             for i in range(cols_to_expand):
                 c = self.table_widget.columnCount() - 1 - i
                 current_width = self.table_widget.columnWidth(c)
-                new_width = min(current_width + extra_per_col, 600)  # 不超过600
+                new_width = min(current_width + extra_per_col, 600)
                 self.table_widget.setColumnWidth(c, new_width)
 
-    # ---------- 交互 ----------
+    # ==================================================================
+    # 交互：执行 SQL、分页按钮
+    # ==================================================================
     def run_query(self):
         if not self.con:
             QMessageBox.warning(self, "警告", "没有数据可查询")
             return
-        q = self.sql_input.text().strip()
-        if not q:
-            return
+        self._prepare_base_sql_from_input()
         try:
-            self.run_sql_to_table(q)
-            self.status_label.setText(f"状态: 查询成功，共 {self.table_widget.rowCount()} 行")
+            self._recount_total_rows()
+            self.current_page = 1
+            self._refresh_current_page()
         except Exception as e:
             QMessageBox.warning(self, "查询错误", f"SQL 查询失败:\n{e}")
 
+    def prev_page(self):
+        if not self.con or self.total_pages <= 1:
+            return
+        if self.current_page > 1:
+            self.current_page -= 1
+            self._refresh_current_page()
+
+    def next_page(self):
+        if not self.con or self.total_pages <= 1:
+            return
+        if self.current_page < self.total_pages:
+            self.current_page += 1
+            self._refresh_current_page()
+
+    def goto_page(self):
+        """从输入框跳转到指定页：支持 '5' 或 '5/32' 形式"""
+        if not self.con or self.total_pages <= 1:
+            return
+
+        text = self.page_input.text().strip()
+        if not text:
+            return
+
+        # 支持 '当前/总' 形式，只取前半部分
+        if "/" in text:
+            text = text.split("/", 1)[0].strip()
+
+        try:
+            page = int(text)
+        except ValueError:
+            QMessageBox.information(self, "提示", "请输入正确的页码（正整数）。")
+            # 恢复为当前页显示
+            self._update_pager_display()
+            return
+
+        if page < 1:
+            page = 1
+        if page > self.total_pages:
+            page = self.total_pages
+
+        self.current_page = page
+        self._refresh_current_page()
+
+    # ==================================================================
+    # 表格编辑 / 保存
+    # ==================================================================
     def add_row(self):
         cols = self.table_widget.columnCount()
         if cols == 0:
@@ -569,7 +774,10 @@ class ParquetTab(QWidget):
             it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             it.setBackground(QColor(255, 255, 255))
             self.table_widget.setItem(r, c, it)
-        self.table_widget.scrollToItem(self.table_widget.item(r, 0), QTableWidget.ScrollHint.PositionAtBottom)
+        self.table_widget.scrollToItem(
+            self.table_widget.item(r, 0),
+            QTableWidget.ScrollHint.PositionAtBottom,
+        )
         self.table_widget.selectRow(r)
         self.table_widget.setCurrentCell(r, 0)
         self.table_widget.resizeRowToContents(r)
@@ -590,15 +798,20 @@ class ParquetTab(QWidget):
         try:
             self.sort_column = None
             self.sort_order = Qt.SortOrder.AscendingOrder
+            self.base_sql = "SELECT * FROM t"
+            self.page_size = 100
+            self.current_page = 1
+            self._recount_total_rows()
             self.sql_input.setText("SELECT * FROM t LIMIT 100")
-            self.run_sql_to_table("SELECT * FROM t LIMIT 100")
-            self.status_label.setText("状态: 已重置为前 100 行")
+            self._refresh_current_page()
         except Exception as e:
             QMessageBox.warning(self, "错误", f"重置失败: {e}")
 
     def _gather_table_to_duckdb(self, tmp_table_name="__tmp_edit__"):
-        """把当前 QTableWidget 的内容灌到 DuckDB 临时表，用于导出 parquet。"""
-        cols = [self.table_widget.horizontalHeaderItem(i).text() for i in range(self.table_widget.columnCount())]
+        cols = [
+            self.table_widget.horizontalHeaderItem(i).text()
+            for i in range(self.table_widget.columnCount())
+        ]
         data = []
         for r in range(self.table_widget.rowCount()):
             row = []
@@ -615,8 +828,7 @@ class ParquetTab(QWidget):
         if data:
             placeholders = ", ".join(["?"] * len(cols))
             self.con.executemany(
-                f'INSERT INTO {tmp_table_name} VALUES ({placeholders})',
-                data
+                f"INSERT INTO {tmp_table_name} VALUES ({placeholders})", data
             )
         return cols
 
@@ -633,13 +845,18 @@ class ParquetTab(QWidget):
             return
         try:
             _ = self._gather_table_to_duckdb()
-            self.con.execute(f"COPY __tmp_edit__ TO '{file_path.replace('\\', '/')}' (FORMAT PARQUET);")
+            self.con.execute(
+                f"COPY __tmp_edit__ TO '{file_path.replace('\\', '/')}' (FORMAT PARQUET);"
+            )
             QMessageBox.information(self, "成功", "文件保存成功！")
             self.status_label.setText(f"状态: 已保存到 {os.path.basename(file_path)}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存失败:\n{e}")
 
 
+# ======================================================================
+# 主窗口
+# ======================================================================
 class ParquetViewer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -670,7 +887,7 @@ class ParquetViewer(QMainWindow):
         self.move(geo.topLeft())
 
     def init_ui(self):
-        self.setWindowTitle('Parquet 文件查看器 (DuckDB) - 增强版')
+        self.setWindowTitle("Parquet 文件查看器 (DuckDB) - 增强版")
         self.setGeometry(100, 100, 1400, 820)
 
         main_widget = QWidget()
@@ -709,7 +926,6 @@ class ParquetViewer(QMainWindow):
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         main_layout.addWidget(self.tab_widget)
 
-        # 添加初始标签
         self.new_tab()
 
     def apply_stylesheet(self):
@@ -754,6 +970,10 @@ class ParquetViewer(QMainWindow):
             QPushButton:pressed {
                 background-color: #1d4ed8;
             }
+            QPushButton:disabled {
+                background-color: #9ca3af;
+                color: #e5e7eb;
+            }
             QLineEdit {
                 background-color: #ffffff;
                 border: 1px solid #d1d5db;
@@ -790,7 +1010,7 @@ class ParquetViewer(QMainWindow):
                 font-weight: 600;
             }
             QHeaderView::section:hover {
-                background-color: #f3f4f6;
+               背景色: #f3f4f6;
             }
             QTreeWidget {
                 background-color: #ffffff;
@@ -893,15 +1113,13 @@ class ParquetViewer(QMainWindow):
     def dropEvent(self, event: QDropEvent):
         for url in event.mimeData().urls():
             file_path = url.toLocalFile()
-            if file_path.lower().endswith('.parquet'):
+            if file_path.lower().endswith(".parquet"):
                 self.open_file_in_new_tab(file_path)
 
 
 def main():
     app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-
-    # 设置应用字体
+    app.setStyle("Fusion")
     app.setFont(QFont("Microsoft YaHei UI", 9))
 
     viewer = ParquetViewer()
@@ -910,5 +1128,5 @@ def main():
     sys.exit(app.exec())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
