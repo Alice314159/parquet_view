@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QSettings, QTimer
 from PyQt6.QtGui import (
     QColor, QFont, QDragEnterEvent, QDropEvent,
-    QIcon, QGuiApplication, QCursor, QFontMetrics, QIntValidator
+    QIcon, QGuiApplication, QCursor, QFontMetrics
 )
 
 
@@ -26,12 +26,30 @@ def resource_path(relative: str) -> str:
     return str(Path.cwd() / relative)
 
 
-# ========================== 让编辑框更清晰的委托 ==========================
+def get_base_font_family() -> str:
+    """根据平台选择一个比较合适的中文/英文字体"""
+    if sys.platform == "darwin":
+        return "PingFang SC"  # macOS
+    elif sys.platform.startswith("win"):
+        return "Microsoft YaHei UI"
+    else:
+        return "Microsoft YaHei UI"
+
+
+def get_base_font_size() -> int:
+    """基础字号（mac 再大一点）"""
+    if sys.platform == "darwin":
+        return 13
+    else:
+        return 10
+
+
+# ========================== 编辑框委托 ==========================
 class StrongEditorDelegate(QStyledItemDelegate):
     """为 QTableWidget 提供更醒目的编辑器（白底、深色字、粗蓝边框、进入时全选）"""
     def createEditor(self, parent, option, index):
         editor = QLineEdit(parent)
-        editor.setFont(QFont("Microsoft YaHei UI", 10))
+        editor.setFont(QFont(get_base_font_family(), get_base_font_size()))
         editor.setStyleSheet("""
             QLineEdit {
                 background: #ffffff;
@@ -68,7 +86,6 @@ class ParquetTab(QWidget):
         self.total_rows = 0
         self.total_pages = 1
         self.base_sql = "SELECT * FROM t"
-        # Qt 控件稍后在 create_right_panel 里赋值
         self.page_info_label: QLabel | None = None
         self.prev_btn: QPushButton | None = None
         self.next_btn: QPushButton | None = None
@@ -97,33 +114,38 @@ class ParquetTab(QWidget):
         right_panel = self.create_right_panel()
         splitter.addWidget(right_panel)
 
-        splitter.setSizes([280, 1120])
+        splitter.setSizes([260, 1140])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+
         layout.addWidget(splitter)
 
     def create_left_panel(self):
         left = QWidget()
-        left.setMaximumWidth(280)
+        left.setMaximumWidth(260)
         left.setObjectName("leftPanel")
         v = QVBoxLayout(left)
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
+        base_size = get_base_font_size()
+
         title_widget = QWidget()
         title_widget.setObjectName("titleWidget")
         tlay = QVBoxLayout(title_widget)
-        tlay.setContentsMargins(15, 15, 15, 15)
+        tlay.setContentsMargins(12, 10, 12, 8)
 
         title_label = QLabel("文件结构")
-        title_label.setFont(QFont("Microsoft YaHei UI", 11, QFont.Weight.Bold))
+        title_label.setFont(QFont(get_base_font_family(), base_size + 1, QFont.Weight.Bold))
         tlay.addWidget(title_label)
 
         info_card = QWidget()
         info_card.setObjectName("infoCard")
         iclay = QVBoxLayout(info_card)
-        iclay.setContentsMargins(10, 10, 10, 10)
+        iclay.setContentsMargins(8, 8, 8, 8)
 
         self.file_info_label = QLabel("未加载文件")
-        self.file_info_label.setFont(QFont("Microsoft YaHei UI", 8))
+        self.file_info_label.setFont(QFont(get_base_font_family(), base_size))
         self.file_info_label.setWordWrap(True)
         self.file_info_label.setStyleSheet("color: #6b7280;")
         iclay.addWidget(self.file_info_label)
@@ -134,7 +156,10 @@ class ParquetTab(QWidget):
         self.tree_widget = QTreeWidget()
         self.tree_widget.setHeaderLabels(["名称 (Name)", "类型 (Type)"])
         self.tree_widget.setColumnWidth(0, 150)
-        self.tree_widget.setIndentation(15)
+        self.tree_widget.setIndentation(16)
+        self.tree_widget.setFont(QFont(get_base_font_family(), base_size + 1))
+        header = self.tree_widget.header()
+        header.setFont(QFont(get_base_font_family(), base_size + 1, QFont.Weight.Medium))
         v.addWidget(self.tree_widget)
         return left
 
@@ -145,26 +170,17 @@ class ParquetTab(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(0)
 
+        base_size = get_base_font_size()
+        table_font_size = base_size + 2  # 表格字号再大一点
+
         # 顶部工具栏
         toolbar = QWidget()
         toolbar.setObjectName("toolbar")
         hlay = QHBoxLayout(toolbar)
-        hlay.setContentsMargins(20, 15, 20, 15)
+        hlay.setContentsMargins(16, 8, 16, 8)
+        hlay.setSpacing(10)
 
-        file_info_layout = QHBoxLayout()
-        # file_icon = QLabel("📄")
-        # file_icon.setFont(QFont("Segoe UI Emoji", 12))
-        # file_info_layout.addWidget(file_icon)
-
-        # self.file_label = QLabel("未打开文件")
-        # self.file_label.setFont(QFont("Microsoft YaHei UI", 10))
-        # self.file_label.setStyleSheet("color: #374151;")
-        # file_info_layout.addWidget(self.file_label)
-        # file_info_layout.addStretch()
-        # hlay.addLayout(file_info_layout)
-        # hlay.addStretch()
-
-        btn_style = "padding: 7px 16px; font-size: 9pt;"
+        btn_style = "padding: 6px 14px; font-size: 10pt;"
 
         add_btn = QPushButton("➕ 新增行")
         add_btn.setStyleSheet(btn_style)
@@ -192,89 +208,89 @@ class ParquetTab(QWidget):
         for b in (add_btn, del_btn, reset_btn, export_csv_btn, save_btn):
             hlay.addWidget(b)
 
+        hlay.addStretch()
         v.addWidget(toolbar)
 
         # 内容区域
         content = QWidget()
         content.setObjectName("contentWidget")
         c = QVBoxLayout(content)
-        c.setContentsMargins(20, 15, 20, 20)
-        c.setSpacing(12)
+        c.setContentsMargins(16, 10, 16, 12)
+        c.setSpacing(8)
 
         sql_label = QLabel("SQL:")
-        sql_label.setFont(QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
+        sql_label.setFont(QFont(get_base_font_family(), base_size + 1, QFont.Weight.Bold))
         sql_label.setStyleSheet("color: #374151;")
         c.addWidget(sql_label)
 
         sql_line = QHBoxLayout()
-        sql_line.setSpacing(10)
+        sql_line.setSpacing(8)
 
         self.sql_input = QLineEdit()
         self.sql_input.setPlaceholderText(
             "输入 SQL 查询... (例如: SELECT * FROM t WHERE open < 100 ORDER BY trade_date DESC)"
         )
         self.sql_input.setText("SELECT * FROM t LIMIT 100")
-        self.sql_input.setMinimumHeight(38)
+        self.sql_input.setMinimumHeight(34)
+        self.sql_input.setFont(QFont(get_base_font_family(), base_size + 1))
         self.sql_input.returnPressed.connect(self.run_query)
         sql_line.addWidget(self.sql_input)
 
         run_btn = QPushButton("▶ 运行")
-        run_btn.setMinimumWidth(90)
-        run_btn.setMinimumHeight(38)
-        run_btn.setStyleSheet("font-size: 9pt; padding: 0 24px; font-weight: 600;")
+        run_btn.setMinimumWidth(80)
+        run_btn.setMinimumHeight(34)
+        run_btn.setStyleSheet("font-size: 10pt; padding: 0 18px; font-weight: 600;")
         run_btn.clicked.connect(self.run_query)
         sql_line.addWidget(run_btn)
 
         c.addLayout(sql_line)
 
         self.status_label = QLabel("状态: 就绪")
-        self.status_label.setFont(QFont("Microsoft YaHei UI", 8))
-        self.status_label.setStyleSheet("color: #6b7280; padding: 5px 0;")
+        self.status_label.setFont(QFont(get_base_font_family(), base_size))
+        self.status_label.setStyleSheet("color: #6b7280; padding: 3px 0;")
         c.addWidget(self.status_label)
 
         # ===== 分页工具条 =====
-        # ===== 分页工具条 =====
         pager_line = QHBoxLayout()
-        pager_line.setSpacing(10)
+        pager_line.setSpacing(6)
 
-        # 左边不再重复显示行数/总页，只保留一个占位空白
         spacer = QLabel("")
-        spacer.setFont(QFont("Microsoft YaHei UI", 8))
+        spacer.setFont(QFont(get_base_font_family(), base_size))
         spacer.setStyleSheet("color: #6b7280;")
         pager_line.addWidget(spacer)
         pager_line.addStretch()
 
-        # 上一页按钮（符号）
         self.prev_btn = QPushButton("⟨")
-        self.prev_btn.setFixedSize(32, 26)
+        self.prev_btn.setFixedSize(30, 24)
         self.prev_btn.clicked.connect(self.prev_page)
         pager_line.addWidget(self.prev_btn)
 
-        # 页码输入框：显示“当前页/总页”，也可手动输入页码回车跳转
         self.page_input = QLineEdit()
         self.page_input.setPlaceholderText("页")
         self.page_input.setFixedWidth(80)
         self.page_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_input.setFont(QFont(get_base_font_family(), base_size))
         self.page_input.returnPressed.connect(self.goto_page)
         pager_line.addWidget(self.page_input)
 
-        # 下一页按钮（符号）
         self.next_btn = QPushButton("⟩")
-        self.next_btn.setFixedSize(32, 26)
+        self.next_btn.setFixedSize(30, 24)
         self.next_btn.clicked.connect(self.next_page)
         pager_line.addWidget(self.next_btn)
 
         c.addLayout(pager_line)
-        # ========================
 
-        # ========================
-
+        # ======================== 表格 ========================
         self.table_widget = QTableWidget()
         self.table_widget.setAlternatingRowColors(True)
         self.table_widget.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table_widget.verticalHeader().setDefaultSectionSize(36)
-        self.table_widget.verticalHeader().setMinimumSectionSize(36)
-        self.table_widget.setFont(QFont("Microsoft YaHei UI", 9))
+        self.table_widget.verticalHeader().setDefaultSectionSize(32)
+        self.table_widget.verticalHeader().setMinimumSectionSize(28)
+        self.table_widget.setFont(QFont(get_base_font_family(), table_font_size))
+
+        header_font = QFont(get_base_font_family(), table_font_size, QFont.Weight.Medium)
+        self.table_widget.horizontalHeader().setFont(header_font)
+
         self.table_widget.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked
             | QTableWidget.EditTrigger.EditKeyPressed
@@ -309,11 +325,9 @@ class ParquetTab(QWidget):
         if self.current_page > self.total_pages:
             self.current_page = self.total_pages
 
-        # 在输入框内显示“当前页/总页”
         if self.page_input:
             self.page_input.setText(f"{self.current_page}/{self.total_pages}")
 
-        # 首页/末页按钮置灰
         if self.prev_btn:
             self.prev_btn.setEnabled(self.current_page > 1)
         if self.next_btn:
@@ -329,7 +343,6 @@ class ParquetTab(QWidget):
         self.run_sql_to_table(page_sql)
         self._update_pager_display()
         self.status_label.setText(f"状态: 第 {self.current_page} 页查询成功")
-
 
     def _recount_total_rows(self):
         """根据 base_sql 重新统计总行数"""
@@ -380,7 +393,6 @@ class ParquetTab(QWidget):
 
         col_name = self.columns[logical_index]
 
-        # 切换排序方向
         if self.sort_column == col_name:
             self.sort_order = (
                 Qt.SortOrder.DescendingOrder
@@ -394,14 +406,12 @@ class ParquetTab(QWidget):
         order_dir = "ASC" if self.sort_order == Qt.SortOrder.AscendingOrder else "DESC"
         escaped_col = col_name.replace('"', '""')
 
-        # ========= 基于当前 SQL 生成新的带 ORDER BY 的 SQL =========
         raw_sql = self.sql_input.text().strip()
         if not raw_sql:
             raw_sql = "SELECT * FROM t LIMIT 100"
 
         upper = raw_sql.upper()
 
-        # 先拆出 LIMIT 子句
         limit_clause = ""
         limit_pos = upper.rfind(" LIMIT ")
         if limit_pos != -1:
@@ -411,17 +421,14 @@ class ParquetTab(QWidget):
             base_sql = raw_sql
             limit_clause = "LIMIT 100"
 
-        # 再去掉旧的 ORDER BY（只查找 LIMIT 前面的部分）
         upper_base = base_sql.upper()
         order_pos = upper_base.rfind(" ORDER BY ")
         if order_pos != -1:
             base_sql = base_sql[:order_pos].strip()
 
-        # 如果完全没写 FROM t，就简单退回 SELECT * FROM t
         if " FROM " not in upper_base:
             base_sql = "SELECT * FROM t"
 
-        # 组新 SQL
         sort_sql = f'{base_sql} ORDER BY "{escaped_col}" {order_dir} {limit_clause}'.strip()
 
         try:
@@ -537,7 +544,6 @@ class ParquetTab(QWidget):
             self.columns = [desc[0] for desc in meta.description] if meta.description else []
 
             file_name = os.path.basename(file_path)
-            #self.file_label.setText(file_name)
             size_mb = os.path.getsize(file_path) / 1024 / 1024
 
             self.base_sql = "SELECT * FROM t"
@@ -565,13 +571,15 @@ class ParquetTab(QWidget):
         if not getattr(self, "con", None):
             self.con = duckdb.connect()
 
+        base_size = get_base_font_size()
+
         root = QTreeWidgetItem(self.tree_widget)
         root.setText(0, "数据表")
-        root.setFont(0, QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
+        root.setFont(0, QFont(get_base_font_family(), base_size + 1, QFont.Weight.Bold))
 
         columns_node = QTreeWidgetItem(root)
         columns_node.setText(0, "列 (Columns)")
-        columns_node.setFont(0, QFont("Microsoft YaHei UI", 9, QFont.Weight.Bold))
+        columns_node.setFont(0, QFont(get_base_font_family(), base_size + 1, QFont.Weight.Bold))
 
         try:
             rel = self.con.execute("SELECT * FROM t LIMIT 0")
@@ -621,7 +629,7 @@ class ParquetTab(QWidget):
         self.display_data(self.columns, rows)
 
     def display_data(self, columns, rows):
-        """显示数据并智能设置列宽"""
+        """显示数据 + 自动分布列宽（自适应内容并占满表格宽度）"""
         self.table_widget.clear()
         self.table_widget.setColumnCount(len(columns))
         self.table_widget.setHorizontalHeaderLabels(columns)
@@ -649,57 +657,10 @@ class ParquetTab(QWidget):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.table_widget.setItem(i, j, item)
 
-        font = self.table_widget.font()
-        fm = QFontMetrics(font)
-        header_font = self.table_widget.horizontalHeader().font()
-        header_fm = QFontMetrics(header_font)
-
-        for c in range(self.table_widget.columnCount()):
-            header_text = self.table_widget.horizontalHeaderItem(c).text()
-            header_width = header_fm.horizontalAdvance(header_text) + 30
-
-            max_content_width = 0
-            sample_rows = min(50, self.table_widget.rowCount())
-            for r in range(sample_rows):
-                item = self.table_widget.item(r, c)
-                if item and item.text():
-                    text = item.text()
-                    text_width = fm.horizontalAdvance(text) + 30
-                    max_content_width = max(max_content_width, text_width)
-
-            optimal_width = max(header_width, max_content_width)
-
-            MIN_WIDTH = 100
-            MAX_WIDTH = 400
-
-            if any(
-                kw in header_text.lower()
-                for kw in ["desc", "note", "comment", "remark", "描述", "备注", "说明"]
-            ):
-                MAX_WIDTH = 600
-
-            if any(kw in header_text.lower() for kw in ["id", "code", "代码", "编号"]):
-                MIN_WIDTH = 80
-                MAX_WIDTH = 200
-
-            final_width = max(MIN_WIDTH, min(optimal_width, MAX_WIDTH))
-            self.table_widget.setColumnWidth(c, int(final_width))
-
-        total_width = sum(
-            self.table_widget.columnWidth(c) for c in range(self.table_widget.columnCount())
-        )
-        available_width = self.table_widget.viewport().width()
-
-        if total_width < available_width and self.table_widget.columnCount() > 0:
-            extra_space = available_width - total_width
-            cols_to_expand = min(3, self.table_widget.columnCount())
-            extra_per_col = extra_space // cols_to_expand
-
-            for i in range(cols_to_expand):
-                c = self.table_widget.columnCount() - 1 - i
-                current_width = self.table_widget.columnWidth(c)
-                new_width = min(current_width + extra_per_col, 600)
-                self.table_widget.setColumnWidth(c, new_width)
+        # 自动列宽：先按内容自适应，再让最后一列 stretch 占满剩余空间
+        header = self.table_widget.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
 
     # ==================================================================
     # 交互：执行 SQL、分页按钮
@@ -739,7 +700,6 @@ class ParquetTab(QWidget):
         if not text:
             return
 
-        # 支持 '当前/总' 形式，只取前半部分
         if "/" in text:
             text = text.split("/", 1)[0].strip()
 
@@ -747,7 +707,6 @@ class ParquetTab(QWidget):
             page = int(text)
         except ValueError:
             QMessageBox.information(self, "提示", "请输入正确的页码（正整数）。")
-            # 恢复为当前页显示
             self._update_pager_display()
             return
 
@@ -782,6 +741,8 @@ class ParquetTab(QWidget):
         self.table_widget.setCurrentCell(r, 0)
         self.table_widget.resizeRowToContents(r)
         self.status_label.setText(f"状态: 已添加新行 (第 {r + 1} 行)")
+        self.total_rows += 1
+        self._update_pager_display()
 
     def delete_selected(self):
         rows = sorted({it.row() for it in self.table_widget.selectedItems()}, reverse=True)
@@ -791,6 +752,8 @@ class ParquetTab(QWidget):
         for r in rows:
             self.table_widget.removeRow(r)
         self.status_label.setText(f"状态: 已删除 {len(rows)} 行")
+        self.total_rows = max(0, self.total_rows - len(rows))
+        self._update_pager_display()
 
     def reset_view(self):
         if not self.con:
@@ -807,48 +770,88 @@ class ParquetTab(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "错误", f"重置失败: {e}")
 
-    def _gather_table_to_duckdb(self, tmp_table_name="__tmp_edit__"):
-        cols = [
-            self.table_widget.horizontalHeaderItem(i).text()
-            for i in range(self.table_widget.columnCount())
-        ]
-        data = []
-        for r in range(self.table_widget.rowCount()):
-            row = []
-            for c in range(self.table_widget.columnCount()):
-                it = self.table_widget.item(r, c)
-                s = it.text() if it else ""
-                row.append(s)
-            data.append(row)
-
-        self._ensure_con()
-        self.con.execute(f"DROP TABLE IF EXISTS {tmp_table_name};")
-        cols_ddl = ", ".join(f'"{name}" VARCHAR' for name in cols)
-        self.con.execute(f"CREATE TABLE {tmp_table_name} ({cols_ddl});")
-        if data:
-            placeholders = ", ".join(["?"] * len(cols))
-            self.con.executemany(
-                f"INSERT INTO {tmp_table_name} VALUES ({placeholders})", data
-            )
-        return cols
-
     def save_file(self):
+        """
+        保存为 Parquet：
+        - 拉取 base_sql 对应的“全表”数据
+        - 用当前页的编辑结果覆盖对应的行
+        - 使用原表 t 的字段类型写出 Parquet
+        - 默认文件名为当前打开的 parquet 文件（方便覆盖保存）
+        """
         if self.table_widget.columnCount() == 0:
             QMessageBox.information(self, "提示", "没有数据可保存。")
             return
 
-        default_dir = os.path.dirname(self.file_path) if self.file_path else ""
+        if not self.con:
+            QMessageBox.information(self, "提示", "尚未加载任何数据。")
+            return
+
+        normalized = " ".join(self.base_sql.split()).strip().upper()
+        if normalized != "SELECT * FROM T":
+            reply = QMessageBox.question(
+                self,
+                "保存提示",
+                "当前 SQL 不是简单的 `SELECT * FROM t`。\n\n"
+                "保存时会按照当前 SQL 的结果集构造“全表”，并用当前页的修改覆盖对应行，"
+                "这可能会和原始 parquet 行顺序/行数不完全一致。\n\n"
+                "建议：先点击“🔄 重置视图”再保存，以确保保存的是完整原始表。\n\n"
+                "是否继续当前保存方式？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # 默认保存路径 = 当前文件路径（包括文件名），方便直接覆盖原文件
+        default_path = self.file_path or ""
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "保存为 Parquet 文件", default_dir, "Parquet Files (*.parquet)"
+            self, "保存 Parquet 文件", default_path, "Parquet Files (*.parquet)"
         )
         if not file_path:
             return
+
         try:
-            _ = self._gather_table_to_duckdb()
+            # 1. 拉取“全表”数据（基于 base_sql）
+            rel = self.con.execute(self.base_sql)
+            all_cols = [d[0] for d in rel.description] if rel.description else []
+            all_rows = [list(row) for row in rel.fetchall()]
+            total = len(all_rows)
+
+            # 2. 用当前页的内容覆盖对应的行
+            offset = (self.current_page - 1) * self.page_size
+            page_rows = self.table_widget.rowCount()
+            page_cols = self.table_widget.columnCount()
+
+            for r in range(page_rows):
+                global_idx = offset + r
+                row_vals = []
+                for c in range(page_cols):
+                    it = self.table_widget.item(r, c)
+                    text = it.text() if it else ""
+                    row_vals.append(None if text == "" else text)
+                if global_idx < total:
+                    all_rows[global_idx] = row_vals
+                else:
+                    all_rows.append(row_vals)
+
+            # 3. 在 DuckDB 中构造一个具有正确字段类型的临时表
+            self._ensure_con()
+            self.con.execute("DROP TABLE IF EXISTS __tmp_edit__;")
+            self.con.execute("CREATE TABLE __tmp_edit__ AS SELECT * FROM t WHERE 1=0;")
+
+            if len(all_cols) != len(self.con.execute("SELECT * FROM __tmp_edit__ LIMIT 0").description):
+                raise RuntimeError("列数与原始表不一致，请先重置视图后再保存。")
+
+            placeholders = ", ".join(["?"] * len(all_cols))
+            self.con.executemany(
+                f"INSERT INTO __tmp_edit__ VALUES ({placeholders})", all_rows
+            )
+
+            # 4. 写出 Parquet 文件
             self.con.execute(
                 f"COPY __tmp_edit__ TO '{file_path.replace('\\', '/')}' (FORMAT PARQUET);"
             )
-            QMessageBox.information(self, "成功", "文件保存成功！")
+
+            QMessageBox.information(self, "成功", "文件已保存（包含全表数据）。")
             self.status_label.setText(f"状态: 已保存到 {os.path.basename(file_path)}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存失败:\n{e}")
@@ -888,7 +891,7 @@ class ParquetViewer(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("Parquet 文件查看器 (DuckDB) - 增强版")
-        self.setGeometry(100, 100, 1400, 820)
+        self.setGeometry(50, 50, 1300, 760)
 
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -899,22 +902,23 @@ class ParquetViewer(QMainWindow):
         toolbar = QWidget()
         toolbar.setObjectName("mainToolbar")
         toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(20, 12, 20, 12)
+        toolbar_layout.setContentsMargins(16, 8, 16, 8)
+        toolbar_layout.setSpacing(10)
 
         open_btn = QPushButton("📂 打开文件")
-        open_btn.setStyleSheet("padding: 8px 20px; font-size: 10pt; font-weight: 600;")
+        open_btn.setStyleSheet("padding: 6px 18px; font-size: 11pt; font-weight: 600;")
         open_btn.clicked.connect(self.open_file)
         toolbar_layout.addWidget(open_btn)
 
         new_tab_btn = QPushButton("➕ 新建标签")
-        new_tab_btn.setStyleSheet("padding: 8px 20px; font-size: 10pt;")
+        new_tab_btn.setStyleSheet("padding: 6px 18px; font-size: 11pt;")
         new_tab_btn.clicked.connect(self.new_tab)
         toolbar_layout.addWidget(new_tab_btn)
 
         toolbar_layout.addStretch()
 
         close_tab_btn = QPushButton("✖ 关闭当前标签")
-        close_tab_btn.setStyleSheet("padding: 8px 20px; font-size: 10pt;")
+        close_tab_btn.setStyleSheet("padding: 6px 18px; font-size: 11pt;")
         close_tab_btn.clicked.connect(self.close_current_tab)
         toolbar_layout.addWidget(close_tab_btn)
 
@@ -978,13 +982,13 @@ class ParquetViewer(QMainWindow):
                 background-color: #ffffff;
                 border: 1px solid #d1d5db;
                 border-radius: 6px;
-                padding: 8px 12px;
+                padding: 6px 10px;
                 color: #111827;
-                font-size: 9pt;
+                font-size: 11pt;
             }
             QLineEdit:focus {
                 border: 2px solid #3b82f6;
-                padding: 7px 11px;
+                padding: 5px 9px;
             }
             QTableWidget {
                 background-color: #ffffff;
@@ -993,7 +997,7 @@ class ParquetViewer(QMainWindow):
                 gridline-color: #f3f4f6;
             }
             QTableWidget::item {
-                padding: 5px;
+                padding: 4px;
                 border-bottom: 1px solid #f3f4f6;
             }
             QTableWidget::item:selected {
@@ -1003,22 +1007,22 @@ class ParquetViewer(QMainWindow):
             QHeaderView::section {
                 background-color: #f9fafb;
                 color: #374151;
-                padding: 8px;
+                padding: 6px;
                 border: none;
                 border-bottom: 2px solid #e5e7eb;
                 border-right: 1px solid #e5e7eb;
                 font-weight: 600;
             }
             QHeaderView::section:hover {
-               背景色: #f3f4f6;
+                background-color: #f3f4f6;
             }
             QTreeWidget {
                 background-color: #ffffff;
                 border: none;
-                font-size: 9pt;
+                font-size: 11pt;
             }
             QTreeWidget::item {
-                padding: 5px;
+                padding: 4px;
                 border-bottom: 1px solid #f3f4f6;
             }
             QTreeWidget::item:selected {
@@ -1035,7 +1039,7 @@ class ParquetViewer(QMainWindow):
             QTabBar::tab {
                 background-color: #f3f4f6;
                 color: #6b7280;
-                padding: 10px 20px;
+                padding: 8px 18px;
                 margin-right: 2px;
                 border-top-left-radius: 6px;
                 border-top-right-radius: 6px;
@@ -1120,22 +1124,20 @@ class ParquetViewer(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    app.setFont(QFont("Microsoft YaHei UI", 9))
+
+    base_font = QFont(get_base_font_family(), get_base_font_size())
+    app.setFont(base_font)
 
     viewer = ParquetViewer()
 
-    # -------------------------------
-    # ⭐⭐ 关键补丁：双击打开文件 ⭐⭐
-    # -------------------------------
+    # 支持命令行双击 .parquet 直接打开
     if len(sys.argv) > 1:
         arg = sys.argv[1]
         if arg.lower().endswith(".parquet") and os.path.exists(arg):
             viewer.open_file_in_new_tab(arg)
 
     viewer.show()
-
     sys.exit(app.exec())
-
 
 
 if __name__ == "__main__":
