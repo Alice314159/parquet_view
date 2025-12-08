@@ -5,12 +5,12 @@ a = Analysis(
     ['parquet_viewer_duckdb.py'],
     pathex=[],
     binaries=[],
-    datas=[('app.ico', '.'), ('F:\\VesperSet\\parquet_view\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\platforms', 'PyQt6/Qt6/plugins/platforms'), ('F:\\VesperSet\\parquet_view\\.venv\\Lib\\site-packages\\PyQt6\\Qt6\\plugins\\imageformats', 'PyQt6/Qt6/plugins/imageformats')],
-    hiddenimports=['duckdb'],
+    datas=[],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pandas', 'pyarrow', 'numpy', 'PyQt6.QtWebEngineCore', 'PyQt6.QtWebEngineWidgets', 'PyQt6.QtWebEngineQuick', 'PyQt6.QtNetworkAuth', 'PyQt6.QtBluetooth', 'PyQt6.QtPositioning', 'PyQt6.QtLocation', 'PyQt6.QtQml', 'PyQt6.QtQuick'],
+    excludes=[],
     noarchive=False,
     optimize=0,
 )
@@ -32,8 +32,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    version='file_version.txt',
-    icon=['app.ico'],
+    icon=['app.icns'],
 )
 coll = COLLECT(
     exe,
@@ -43,4 +42,10 @@ coll = COLLECT(
     upx=True,
     upx_exclude=[],
     name='ParquetViewer',
+)
+app = BUNDLE(
+    coll,
+    name='ParquetViewer.app',
+    icon='app.icns',
+    bundle_identifier=None,
 )
